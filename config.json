@@ -1,0 +1,23 @@
+{
+  "exchange": "binance",
+  "spotSymbol": "DOGE/USDT",
+  "futuresSymbol": "DOGE/USDT:USDT",
+  "arbitrage": {
+    "openThresholdPercent": 0.05,
+    "closeThresholdPercent": 0.01,
+    "fundingRateThresholdPercent": 0.005
+  },
+  "fees": {
+    "spotTaker": 0.001,
+    "futuresTaker": 0.0005
+  },
+  "logging": {
+    "showPriceUpdates": false
+  },
+  "paperTrading": {
+    "initialBalance": {
+      "USDT": 1000
+    },
+    "tradeAmountUSDT": 100
+  }
+}
