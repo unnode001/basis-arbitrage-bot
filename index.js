@@ -20,11 +20,18 @@ class ArbitrageBot {
     constructor(config) {
         this.config = config;
         
-        // --- 核心修改：移除所有网络相关的硬编码设置 ---
-        // 让 ccxt 自动处理 API 端点和超时。
-        this.exchange = new ccxt[this.config.exchange]({
-            // 我们保留一个合理的超时时间
-            'timeout': 20000, 
+        // --- 核心修改：创建两个独立的交易所实例 ---
+        // 1. 现货专用实例
+        this.spotExchange = new ccxt[this.config.exchange]({
+            'timeout': 20000,
+        });
+
+        // 2. 合约专用实例
+        this.futuresExchange = new ccxt[this.config.exchange]({
+            'timeout': 20000,
+            'options': {
+                'defaultType': 'swap', // 明确告诉此实例，它是处理合约的
+            },
         });
 
         this.spotPrice = { bid: null, ask: null };
@@ -41,7 +48,11 @@ class ArbitrageBot {
 
         try {
             log('info', '正在从交易所加载市场数据...');
-            await this.exchange.loadMarkets();
+            // 两个实例都需要加载市场数据
+            await Promise.all([
+                this.spotExchange.loadMarkets(),
+                this.futuresExchange.loadMarkets()
+            ]);
             log('info', '市场数据加载成功。');
         } catch (error) {
             log('error', `加载市场数据失败: ${error.message}`);
@@ -54,8 +65,9 @@ class ArbitrageBot {
 
     async fetchFundingRatePeriodically() {
         try {
-            const market = this.exchange.market(this.config.futuresSymbol);
-            const fundingRateData = await this.exchange.fetchFundingRate(market.symbol);
+            // 使用合约实例来获取资金费率
+            const market = this.futuresExchange.market(this.config.futuresSymbol);
+            const fundingRateData = await this.futuresExchange.fetchFundingRate(market.symbol);
             this.fundingRate = parseFloat(fundingRateData.fundingRate) * 100;
             log('info', `获取到资金费率: ${this.fundingRate.toFixed(4)}%`);
         } catch (error) {
@@ -72,16 +84,16 @@ class ArbitrageBot {
         const pollPrices = async () => {
             while (true) {
                 try {
+                    // --- 核心修改：从各自专用的实例获取价格 ---
                     const [spotTicker, futuresTicker] = await Promise.all([
-                        this.exchange.fetchTicker(this.config.spotSymbol),
-                        this.exchange.fetchTicker(this.config.futuresSymbol)
+                        this.spotExchange.fetchTicker(this.config.spotSymbol),
+                        this.futuresExchange.fetchTicker(this.config.futuresSymbol)
                     ]);
                     
-                    // 增加健壮性检查
                     if (!spotTicker || !futuresTicker) {
                        log('warn', '本次轮询未能获取到完整的现货和合约价格，跳过。');
                        await new Promise(resolve => setTimeout(resolve, pollInterval));
-                       continue; // 跳到下一次循环
+                       continue;
                     }
 
                     this.spotPrice.bid = spotTicker.bid;
@@ -107,7 +119,7 @@ class ArbitrageBot {
         pollPrices();
     }
     
-    // ... 后续函数 (checkArbitrageOpportunity, simulateOpenPosition, simulateClosePosition) 无需任何修改 ...
+    // ... 后续函数 (checkArbitrageOpportunity, simulateOpenPosition, etc.) 无需修改 ...
     checkArbitrageOpportunity() {
         if (!this.spotPrice.ask || !this.futuresPrice.bid || this.fundingRate === null) {
             return;
