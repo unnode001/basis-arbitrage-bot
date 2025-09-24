@@ -12,12 +12,13 @@
     "futuresTaker": 0.0005
   },
   "logging": {
-    "showPriceUpdates": false
+    "showPriceUpdates": true
   },
   "paperTrading": {
     "initialBalance": {
       "USDT": 1000
     },
     "tradeAmountUSDT": 100
-  }
+  },
+  "pollingIntervalMs": 2500
 }

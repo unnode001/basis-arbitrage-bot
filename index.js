@@ -19,16 +19,12 @@ try {
 class ArbitrageBot {
     constructor(config) {
         this.config = config;
-
-        // --- 网络优化修改 ---
+        // 注意：这里的网络优化参数对于Cloud Shell可能不再需要，但保留无害
         this.exchange = new ccxt[this.config.exchange]({
-            'timeout': 30000, // 将超时时间从默认的10秒增加到30秒
+            'timeout': 30000,
             'options': {
-                'defaultType': 'swap', // 将默认类型放在这里更安全
-                // 如果api.binance.com连接不上，可以尝试备用域名
-                // 'adjustForTimeDifference': true, // 如果遇到时间戳问题可以开启
-                'hostname': 'api3.binance.com', // 尝试使用备用服务器 api1/2/3
-                // 或者 'hostname': 'data.binance.com'
+                'defaultType': 'swap',
+                'hostname': 'api3.binance.com', 
             },
         });
 
@@ -50,18 +46,13 @@ class ArbitrageBot {
             log('info', '市场数据加载成功。');
         } catch (error) {
             log('error', `加载市场数据失败: ${error.message}`);
-            // 提供更详细的错误帮助
-            if (error instanceof ccxt.RequestTimeout) {
-                log('help', '这通常是一个网络问题。请检查您的网络连接，或尝试在config.js中更换hostname。');
-            }
             process.exit(1);
         }
 
         this.fetchFundingRatePeriodically();
-        this.watchMarkets();
+        this.watchMarkets(); // 调用已修改的轮询函数
     }
-    
-    // ... 后续代码 (fetchFundingRatePeriodically, watchMarkets, etc.) 与之前版本完全相同，无需改动 ...
+
     async fetchFundingRatePeriodically() {
         try {
             const market = this.exchange.market(this.config.futuresSymbol);
@@ -74,45 +65,51 @@ class ArbitrageBot {
         setTimeout(() => this.fetchFundingRatePeriodically(), 1000 * 60 * 60);
     }
 
+    // --- 核心修改：从 WebSocket (watch) 切换到 轮询 (poll) ---
     async watchMarkets() {
-        const watchSpot = async () => {
+        log('info', '启动轮询模式 (Polling Mode) 监控市场价格。');
+        const pollInterval = this.config.pollingIntervalMs || 3000; // 从配置读取间隔，默认3秒
+        log('info', `价格轮询间隔设置为: ${pollInterval}ms`);
+
+        const pollPrices = async () => {
             while (true) {
                 try {
-                    const ticker = await this.exchange.watchTicker(this.config.spotSymbol);
-                    this.spotPrice.bid = ticker.bid;
-                    this.spotPrice.ask = ticker.ask;
+                    // 使用 Promise.all 并行获取现货和合约的最新价格，效率更高
+                    const [spotTicker, futuresTicker] = await Promise.all([
+                        this.exchange.fetchTicker(this.config.spotSymbol),
+                        this.exchange.fetchTicker(this.config.futuresSymbol)
+                    ]);
+
+                    this.spotPrice.bid = spotTicker.bid;
+                    this.spotPrice.ask = spotTicker.ask;
+                    this.futuresPrice.bid = futuresTicker.bid;
+                    this.futuresPrice.ask = futuresTicker.ask;
+
                     if (this.config.logging.showPriceUpdates) {
-                        log('data', `现货价格更新: 买一 ${this.spotPrice.bid} / 卖一 ${this.spotPrice.ask}`);
+                        const basis = (this.futuresPrice.bid - this.spotPrice.ask).toFixed(6);
+                        const basisPercent = ((this.futuresPrice.bid / this.spotPrice.ask - 1) * 100).toFixed(4);
+                        log('data', `现货: ${this.spotPrice.ask} | 合约: ${this.futuresPrice.bid} | 基差: ${basis} (${basisPercent}%)`);
                     }
+
+                    // 每次获取到新价格后，都检查一次套利机会
                     this.checkArbitrageOpportunity();
+
                 } catch (error) {
-                    log('error', `监控现货市场失败: ${error.message}`);
-                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    if (error instanceof ccxt.NetworkError) {
+                        log('error', `轮询价格失败 (网络错误): ${error.message}`);
+                    } else {
+                        log('error', `轮询价格失败: ${error.message}`);
+                    }
                 }
+                // 等待指定间隔后进行下一次轮询
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
             }
         };
 
-        const watchFutures = async () => {
-            while (true) {
-                try {
-                    const ticker = await this.exchange.watchTicker(this.config.futuresSymbol);
-                    this.futuresPrice.bid = ticker.bid;
-                    this.futuresPrice.ask = ticker.ask;
-                    if (this.config.logging.showPriceUpdates) {
-                        log('data', `合约价格更新: 买一 ${this.futuresPrice.bid} / 卖一 ${this.futuresPrice.ask}`);
-                    }
-                    this.checkArbitrageOpportunity();
-                } catch (error) {
-                    log('error', `监控合约市场失败: ${error.message}`);
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                }
-            }
-        };
-
-        watchSpot();
-        watchFutures();
+        pollPrices(); // 启动轮询循环
     }
     
+    // ... checkArbitrageOpportunity, simulateOpenPosition, simulateClosePosition 函数无需任何修改 ...
     checkArbitrageOpportunity() {
         if (!this.spotPrice.ask || !this.futuresPrice.bid || this.fundingRate === null) {
             return;
