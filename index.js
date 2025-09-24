@@ -19,13 +19,12 @@ try {
 class ArbitrageBot {
     constructor(config) {
         this.config = config;
-        // 注意：这里的网络优化参数对于Cloud Shell可能不再需要，但保留无害
+        
+        // --- 核心修改：移除所有网络相关的硬编码设置 ---
+        // 让 ccxt 自动处理 API 端点和超时。
         this.exchange = new ccxt[this.config.exchange]({
-            'timeout': 30000,
-            'options': {
-                'defaultType': 'swap',
-                'hostname': 'api3.binance.com', 
-            },
+            // 我们保留一个合理的超时时间
+            'timeout': 20000, 
         });
 
         this.spotPrice = { bid: null, ask: null };
@@ -50,7 +49,7 @@ class ArbitrageBot {
         }
 
         this.fetchFundingRatePeriodically();
-        this.watchMarkets(); // 调用已修改的轮询函数
+        this.watchMarkets();
     }
 
     async fetchFundingRatePeriodically() {
@@ -65,20 +64,25 @@ class ArbitrageBot {
         setTimeout(() => this.fetchFundingRatePeriodically(), 1000 * 60 * 60);
     }
 
-    // --- 核心修改：从 WebSocket (watch) 切换到 轮询 (poll) ---
     async watchMarkets() {
         log('info', '启动轮询模式 (Polling Mode) 监控市场价格。');
-        const pollInterval = this.config.pollingIntervalMs || 3000; // 从配置读取间隔，默认3秒
+        const pollInterval = this.config.pollingIntervalMs || 3000;
         log('info', `价格轮询间隔设置为: ${pollInterval}ms`);
 
         const pollPrices = async () => {
             while (true) {
                 try {
-                    // 使用 Promise.all 并行获取现货和合约的最新价格，效率更高
                     const [spotTicker, futuresTicker] = await Promise.all([
                         this.exchange.fetchTicker(this.config.spotSymbol),
                         this.exchange.fetchTicker(this.config.futuresSymbol)
                     ]);
+                    
+                    // 增加健壮性检查
+                    if (!spotTicker || !futuresTicker) {
+                       log('warn', '本次轮询未能获取到完整的现货和合约价格，跳过。');
+                       await new Promise(resolve => setTimeout(resolve, pollInterval));
+                       continue; // 跳到下一次循环
+                    }
 
                     this.spotPrice.bid = spotTicker.bid;
                     this.spotPrice.ask = spotTicker.ask;
@@ -91,25 +95,19 @@ class ArbitrageBot {
                         log('data', `现货: ${this.spotPrice.ask} | 合约: ${this.futuresPrice.bid} | 基差: ${basis} (${basisPercent}%)`);
                     }
 
-                    // 每次获取到新价格后，都检查一次套利机会
                     this.checkArbitrageOpportunity();
 
                 } catch (error) {
-                    if (error instanceof ccxt.NetworkError) {
-                        log('error', `轮询价格失败 (网络错误): ${error.message}`);
-                    } else {
-                        log('error', `轮询价格失败: ${error.message}`);
-                    }
+                    log('error', `轮询价格失败: ${error.message}`);
                 }
-                // 等待指定间隔后进行下一次轮询
                 await new Promise(resolve => setTimeout(resolve, pollInterval));
             }
         };
 
-        pollPrices(); // 启动轮询循环
+        pollPrices();
     }
     
-    // ... checkArbitrageOpportunity, simulateOpenPosition, simulateClosePosition 函数无需任何修改 ...
+    // ... 后续函数 (checkArbitrageOpportunity, simulateOpenPosition, simulateClosePosition) 无需任何修改 ...
     checkArbitrageOpportunity() {
         if (!this.spotPrice.ask || !this.futuresPrice.bid || this.fundingRate === null) {
             return;
